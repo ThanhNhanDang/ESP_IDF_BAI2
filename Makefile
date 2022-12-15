@@ -1,0 +1,4 @@
+PROJECT_NAME := dht22_blynk
+CFLAGS += -DLWIP_NETIF_LOOPBACK=1
+CFLAGS += -DLWIP_LOOPBACK_MAX_PBUFS=8
+include $(IDF_PATH)/make/project.mk
