@@ -9,3 +9,9 @@ Please check [ESP-IDF docs](https://docs.espressif.com/projects/esp-idf/en/lates
 Unless required by applicable law or agreed to in writing, this
 software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
 CONDITIONS OF ANY KIND, either express or implied.*
+
+The program reads temperature and humidity data from the DHT22 sensor. Show up on the Blynk app.
+ * App Blynk has:
+ * -Gauge temperature and humidity display
+ * -Line chart showing current humidity
+ * -Press button to stop updating data

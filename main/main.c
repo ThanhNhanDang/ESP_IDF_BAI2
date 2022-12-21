@@ -1,34 +1,8 @@
 /*
  * Written by Thành Nhân <yesthanhnhan@gmail.com>
- * Copyright (C) 2022
+ * Copyright (C) 21/12/2022
  *
- * Chương trình đọc dữ liệu nhiệt độ và độ ẩm từ cảm biến DHT22. Hiển thị lên app Blynk.
- * App Blynk có:
- * -Hiển thi nhiệt độ và độ ẩm dạng biểu đồ gauge
- * -Biểu đồ đường thể hiện độ ẩm hiện tại
- * -Nút nhấn để dừng việc cập nhật dữ liệu
- *
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice, this permission notice, and the following
- * disclaimer shall be included in all copies or substantial portions of
- * the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OF OR OTHER
- * DEALINGS IN THE SOFTWARE.
- *
- */
+*/
 
 #include <stdio.h>
 #include <string.h>
@@ -53,29 +27,7 @@
 #include "nvs_flash.h"
 
 #include "lwip/err.h"
-#include "lwip/sys.h"
-
-#define CHECK_ARG(VAL)                  \
-    do                                  \
-    {                                   \
-        if (!(VAL))                     \
-            return ESP_ERR_INVALID_ARG; \
-    } while (0)
-
-#define CHECK_LOGE(x, msg, ...)                \
-    do                                         \
-    {                                          \
-        esp_err_t __;                          \
-        if ((__ = x) != ESP_OK)                \
-        {                                      \
-            PORT_EXIT_CRITICAL();              \
-            ESP_LOGE(TAG, msg, ##__VA_ARGS__); \
-            return __;                         \
-        }                                      \
-    } while (0)
-
-#define     PORT_ENTER_CRITICAL()   portENTER_CRITICAL(&mux)
-#define     PORT_EXIT_CRITICAL()    portEXIT_CRITICAL(&mux)
+#include <dht.h>
 
 #define     BLYNK_AUTH_TOKEN        "K4HSc6ttnPha6dyF2CdN_A_4JsNfIxbD"
 #define     SERVER                  "blynk.cloud"
@@ -85,11 +37,8 @@
 
 #define     SENSOR_TYPE             DHT_TYPE_AM2301
 #define     SENSOR_PIN              15
-#define     DHT_TIMER_INTERVAL      2
-#define     DHT_DATA_BITS           40
-#define     DHT_DATA_BYTES          (DHT_DATA_BITS / 8)
 
-#define     EXAMPLE_ESP_WIFI_SSID       "Hai Anh"
+#define     EXAMPLE_ESP_WIFI_SSID       "NhanSgu"
 #define     EXAMPLE_ESP_WIFI_PASS       "123456789"
 #define     EXAMPLE_ESP_MAXIMUM_RETRY   5
 
@@ -99,23 +48,12 @@
 static const char               *TAG                    = "UPDATE_DATA";
 static const char               *TAG_BUTTON_BLYNK       = "BUTTON_BLYNK";
 static  const char              *TAG_WIFI               = "wifi station";
-static portMUX_TYPE             mux                     = portMUX_INITIALIZER_UNLOCKED;
 
 static  EventGroupHandle_t      s_wifi_event_group;
 static  float                   temperature, humidity;
 static  int                     s_retry_num             = 0;
 int                             button_blynk_response;
 
-typedef enum
-{
-    DHT_TYPE_AM2301, //!< AM2301 (DHT21, DHT22, AM2302, AM2321)
-} dht_sensor_type_t;
-
-static inline   int16_t         dht_convert_data(dht_sensor_type_t sensor_type, uint8_t msb, uint8_t lsb);
-static inline   esp_err_t       dht_fetch_data(dht_sensor_type_t sensor_type, gpio_num_t pin, uint8_t data[DHT_DATA_BYTES]);
-static  esp_err_t               dht_await_pin_state(gpio_num_t pin, uint32_t timeout, int expected_pin_state, uint32_t *duration);
-esp_err_t                       dht_read_data(dht_sensor_type_t sensor_type, gpio_num_t pin, int16_t *humidity, int16_t *temperature);
-esp_err_t                       dht_read_float_data(dht_sensor_type_t sensor_type, gpio_num_t pin, float *humidity, float *temperature);
 void                            dht_test(void *pvParameters);
 
 static  void            event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
@@ -128,159 +66,6 @@ void                    send_http_request_and_no_parse_response(char *http_reque
 void                    write_http_request(char *pinTemperature, char *pinHumidity);
 static void             check_button();
 static void             update_data();
-
-void app_main(void)
-{
-    // Initialize NVS
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
-    {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
-
-    ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
-    wifi_init_sta();
-
-    xTaskCreate(dht_test, "dht_test", configMINIMAL_STACK_SIZE * 3, NULL, 1, NULL);
-    /* Start Blynk client task */
-    xTaskCreate(check_button, "HTTP request for valve control", 4096, NULL, 1, NULL);
-    xTaskCreate(update_data, "HTTP request for valve control", 4096, NULL, 1, NULL);
-}
-
-static inline int16_t dht_convert_data(dht_sensor_type_t sensor_type, uint8_t msb, uint8_t lsb)
-{
-    int16_t data;
-
-    data = msb & 0x7F;
-    data <<= 8;
-    data |= lsb;
-    if (msb & BIT(7))
-        data = -data; // convert it to negative
-
-    return data;
-}
-static esp_err_t dht_await_pin_state(gpio_num_t pin, uint32_t timeout,
-                                     int expected_pin_state, uint32_t *duration)
-{
-    /* XXX dht_await_pin_state() should save pin direction and restore
-     * the direction before return. however, the SDK does not provide
-     * gpio_get_direction().
-     */
-    gpio_set_direction(pin, GPIO_MODE_INPUT);
-    for (uint32_t i = 0; i < timeout; i += DHT_TIMER_INTERVAL)
-    {
-        // need to wait at least a single interval to prevent reading a jitter
-        ets_delay_us(DHT_TIMER_INTERVAL);
-        if (gpio_get_level(pin) == expected_pin_state)
-        {
-            if (duration)
-                *duration = i;
-            return ESP_OK;
-        }
-    }
-
-    return ESP_ERR_TIMEOUT;
-}
-
-static inline esp_err_t dht_fetch_data(dht_sensor_type_t sensor_type, gpio_num_t pin, uint8_t data[DHT_DATA_BYTES])
-{
-    uint32_t low_duration;
-    uint32_t high_duration;
-
-    // Phase 'A' pulling signal low to initiate read sequence
-    gpio_set_direction(pin, GPIO_MODE_OUTPUT_OD);
-    gpio_set_level(pin, 0);
-    ets_delay_us(20000);
-    gpio_set_level(pin, 1);
-
-    // Step through Phase 'B', 40us
-    CHECK_LOGE(dht_await_pin_state(pin, 40, 0, NULL),
-               "Initialization error, problem in phase 'B'");
-    // Step through Phase 'C', 88us
-    CHECK_LOGE(dht_await_pin_state(pin, 88, 1, NULL),
-               "Initialization error, problem in phase 'C'");
-    // Step through Phase 'D', 88us
-    CHECK_LOGE(dht_await_pin_state(pin, 88, 0, NULL),
-               "Initialization error, problem in phase 'D'");
-
-    // Read in each of the 40 bits of data...
-    for (int i = 0; i < DHT_DATA_BITS; i++)
-    {
-        CHECK_LOGE(dht_await_pin_state(pin, 65, 1, &low_duration),
-                   "LOW bit timeout");
-        CHECK_LOGE(dht_await_pin_state(pin, 75, 0, &high_duration),
-                   "HIGH bit timeout");
-
-        uint8_t b = i / 8;
-        uint8_t m = i % 8;
-        if (!m)
-            data[b] = 0;
-
-        data[b] |= (high_duration > low_duration) << (7 - m);
-    }
-
-    return ESP_OK;
-}
-
-esp_err_t dht_read_data(dht_sensor_type_t sensor_type, gpio_num_t pin,
-                        int16_t *humidity, int16_t *temperature)
-{
-    CHECK_ARG(humidity || temperature);
-
-    uint8_t data[DHT_DATA_BYTES] = {0};
-
-    gpio_set_direction(pin, GPIO_MODE_OUTPUT_OD);
-    gpio_set_level(pin, 1);
-
-    PORT_ENTER_CRITICAL();
-    esp_err_t result = dht_fetch_data(sensor_type, pin, data);
-    if (result == ESP_OK)
-        PORT_EXIT_CRITICAL();
-
-    /* restore GPIO direction because, after calling dht_fetch_data(), the
-     * GPIO direction mode changes */
-    gpio_set_direction(pin, GPIO_MODE_OUTPUT_OD);
-    gpio_set_level(pin, 1);
-
-    if (result != ESP_OK)
-        return result;
-
-    if (data[4] != ((data[0] + data[1] + data[2] + data[3]) & 0xFF))
-    {
-        ESP_LOGE(TAG, "Checksum failed, invalid data received from sensor");
-        return ESP_ERR_INVALID_CRC;
-    }
-
-    if (humidity)
-        *humidity = dht_convert_data(sensor_type, data[0], data[1]);
-    if (temperature)
-        *temperature = dht_convert_data(sensor_type, data[2], data[3]);
-
-    ESP_LOGD(TAG, "Sensor data: humidity=%d, temp=%d", *humidity, *temperature);
-
-    return ESP_OK;
-}
-
-esp_err_t dht_read_float_data(dht_sensor_type_t sensor_type, gpio_num_t pin,
-                              float *humidity, float *temperature)
-{
-    CHECK_ARG(humidity || temperature);
-
-    int16_t i_humidity, i_temp;
-
-    esp_err_t res = dht_read_data(sensor_type, pin, humidity ? &i_humidity : NULL, temperature ? &i_temp : NULL);
-    if (res != ESP_OK)
-        return res;
-
-    if (humidity)
-        *humidity = i_humidity / 10.0;
-    if (temperature)
-        *temperature = i_temp / 10.0;
-
-    return ESP_OK;
-}
 
 void dht_test(void *pvParameters)
 {
@@ -530,6 +315,26 @@ static void check_button()
         char http_request[500];
         strcpy(http_request, form_http_request("v2"));
         button_blynk_response = atoi(send_http_request_and_parse_response(http_request));
-        vTaskDelay(pdMS_TO_TICKS(20));
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
+}
+
+void app_main(void)
+{
+    // Initialize NVS
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
+    wifi_init_sta();
+
+    xTaskCreate(dht_test, "dht_test", configMINIMAL_STACK_SIZE * 3, NULL, 1, NULL);
+    /* Start Blynk client task */
+    xTaskCreate(check_button, "HTTP request for valve control", 4096, NULL, 1, NULL);
+    xTaskCreate(update_data, "HTTP request for valve control", 4096, NULL, 1, NULL);
 }
