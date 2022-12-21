@@ -1,4 +1,4 @@
-ESP-IDF template app
+ESP-IDF DHT_BLYNK APP
 ====================
 Please check [the Flowchart](https://drive.google.com/file/d/1_6uG4EFNOBEbGWapHV9YBnMlp6F4xTX_/view?usp=sharing) for this project.
 
